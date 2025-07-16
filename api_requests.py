@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from tkinter import messagebox
 import time
 from ratelimit import limits, sleep_and_retry
@@ -9,7 +11,7 @@ from typing import Optional, Dict, Any, Tuple
 NASDAQ_CALLS = 30  # calls
 NASDAQ_PERIOD = 60  # seconds
 FMP_CALLS = 10
-FMP_PERIOD = 5
+FMP_PERIOD = 3
 
 headers = {
     "Accept": "application/json, text/plain, */*",
@@ -113,16 +115,15 @@ def get_fmp_earnings_data(symbol: str, retry_count: int = 3, delay: float = 1.0)
 
     return None
 
-
 @sleep_and_retry
 @limits(calls=FMP_CALLS, period=FMP_PERIOD)
-def get_open_close_price(symbol: str) -> Tuple[Optional[float], Optional[float]]:
+def get_recent_price(symbol: str) -> Optional[float]:
     print("getting open close prices")
-    """Get open/close prices with rate limiting and error handling."""
+    """Get latest price with rate limiting and error handling."""
     api_key = os.getenv('FINANCIAL_API_KEY')
     if not api_key:
         messagebox.showerror("Error", "FINANCIAL_API_KEY not set in environment variables")
-        return None, None
+        return None
 
     url = f"https://financialmodelingprep.com/api/v3/historical-chart/1min/{symbol}?apikey={api_key}"
 
@@ -131,23 +132,20 @@ def get_open_close_price(symbol: str) -> Tuple[Optional[float], Optional[float]]
 
         if response.status_code != 200:
             messagebox.showerror("API Error", f"Error {response.status_code} fetching data for {symbol}")
-            return None, None
+            return None
 
         data = response.json()
         if not data:
-            return None, None
+            return None
 
-        open_price = data[-1]['open']
-        latest_price = data[0]['close']
-        return open_price, latest_price
+        return data[0]['close']
 
     except requests.exceptions.RequestException as e:
         messagebox.showerror("Network Error", f"Failed to fetch price data: {str(e)}")
-        return None, None
+        return None
     except Exception as e:
         messagebox.showerror("Error", f"Unexpected error: {str(e)}")
-        return None, None
-
+        return None
 
 @sleep_and_retry
 @limits(calls=FMP_CALLS, period=FMP_PERIOD)
@@ -202,6 +200,78 @@ def get_price_changes(symbol: str) -> Optional[Dict[str, float]]:
 
     except requests.exceptions.RequestException as e:
         messagebox.showerror("Network Error", f"Failed to fetch price changes: {str(e)}")
+        return None
+    except Exception as e:
+        messagebox.showerror("Error", f"Unexpected error: {str(e)}")
+        return None
+
+@sleep_and_retry
+@limits(calls=FMP_CALLS, period=FMP_PERIOD)
+def get_aftermarket_quote(symbol: str) -> Optional[float]:
+    """Get after-market ask price for a given stock symbol.
+    Args:
+        symbol (str): The stock symbol to get after-market data for
+    Returns:
+        Optional[float]: The current ask price, or None if unavailable
+    """
+    print("getting aftermarket quote")
+    api_key = os.getenv('FINANCIAL_API_KEY')
+    if not api_key:
+        messagebox.showerror("Error", "FINANCIAL_API_KEY not set in environment variables")
+        return None
+    url = f"https://financialmodelingprep.com/stable/aftermarket-quote?symbol={symbol}&apikey={api_key}"
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            messagebox.showerror("API Error", f"Error {response.status_code} fetching after-market data for {symbol}")
+            return None
+        data = response.json()
+        if not data or len(data) == 0:
+            print(f"No after-market data available for {symbol}")
+            return None
+        quote = data[0]  # Get first item from the list
+        return quote.get('askPrice')
+    except requests.exceptions.RequestException as e:
+        messagebox.showerror("Network Error", f"Failed to fetch after-market data: {str(e)}")
+        return None
+    except Exception as e:
+        messagebox.showerror("Error", f"Unexpected error: {str(e)}")
+        return None
+
+@sleep_and_retry
+@limits(calls=FMP_CALLS, period=FMP_PERIOD)
+def get_yesterday_close(symbol: str) -> Optional[float]:
+    print("getting yesterday's closing price")
+    """Get yesterday's closing price for a given stock symbol.
+    Args:
+        symbol (str): The stock symbol to get the closing price for
+    Returns:
+        Optional[float]: Yesterday's closing price, or None if unavailable
+    """
+    api_key = os.getenv('FINANCIAL_API_KEY')
+    if not api_key:
+        messagebox.showerror("Error", "FINANCIAL_API_KEY not set in environment variables")
+        return None
+
+    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?apikey={api_key}"
+
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            messagebox.showerror("API Error", f"Error {response.status_code} fetching yesterday's close for {symbol}")
+            return None
+
+        data = response.json()
+        if not data or 'historical' not in data or len(data['historical']) < 2:
+            print(f"No historical data available for {symbol}")
+            return None
+
+        # Get yesterday's close from the second entry (index 1)
+        # since the first entry (index 0) is today
+        return data['historical'][1]['close']
+
+    except requests.exceptions.RequestException as e:
+        messagebox.showerror("Network Error", f"Failed to fetch yesterday's closing price: {str(e)}")
         return None
     except Exception as e:
         messagebox.showerror("Error", f"Unexpected error: {str(e)}")
