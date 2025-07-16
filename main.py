@@ -7,56 +7,38 @@ from formatting import get_detailed_earnings
 data = api_requests.get_nasdaq_earnings("2025-07-15")
 symbols = [row['symbol'] for row in data['data']['rows']]
 earnings_list = get_detailed_earnings(symbols)
-#datas = yf.download("JPM", interval="1m", period="1d")
-#print(calculate_earnings_surprise(datas))
 
 class StockTable(tk.Tk):
 
     def __init__(self):
         super().__init__()
 
-        self.title('Lunari')
+        self.title('Aurora')
         self.geometry('1920x1080')
 
         # Create Treeview
         self.tree = ttk.Treeview(self)
         self.tree.pack(fill='both', expand=True)
 
+        # Show headings
+        self.tree['show'] = 'headings'
+
         # Define columns
-        self.tree['columns'] = ('Symbol', 'Company', 'Market Cap', 'EPS Forecast', 'EPS Actual', 'EPS Surprise',
-                                'Price 4:00 am', 'Current Price', 'Price % Δ', 'Δ 1 week', 'Δ 1 Month', 'Δ 1 Year','Overreaction?')
+        columns = ('Symbol', 'Company', 'Market Cap', 'EPS Forecast', 'EPS Actual', 'EPS Surprise',
+                   'Price Opening', 'Current Price', 'Price % Change', 'Change 1 week', '1 Month',
+                   '3 Month', '1 Year', 'Overreaction?')
+        self.tree['columns'] = columns
 
-        # Format columns
-        self.tree.column('#0', width=0, stretch=tk.NO)  # Hidden column
-        self.tree.column('Symbol', anchor=tk.W, width=100)
-        self.tree.column('Company', anchor=tk.W, width=300)
-        self.tree.column('Market Cap', anchor=tk.E, width=150)
-        self.tree.column('EPS Forecast', anchor=tk.E, width=100)
-        self.tree.column('EPS Actual', anchor=tk.E, width=100)
-        self.tree.column('EPS Surprise', anchor=tk.E, width=100)
-        self.tree.column('Price 4:00 am', anchor=tk.E, width=100)
-        self.tree.column('Current Price', anchor=tk.E, width=100)
-        self.tree.column('Price % Δ', anchor=tk.E, width=100)
-        self.tree.column('Δ 1 week', anchor=tk.E, width=100)
-        self.tree.column('Δ 1 Month', anchor=tk.E, width=100)
-        self.tree.column('Δ 1 Year', anchor=tk.E, width=100)
-        self.tree.column('Overreaction?', anchor=tk.E, width=100)
+        # Configure column headings
+        for col in columns:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, anchor='center', width=100)  # Add default width
 
-        # Create headings
-        self.tree.heading('#0', text='', anchor=tk.W)
-        self.tree.heading('Symbol', text='Symbol', anchor=tk.W)
-        self.tree.heading('Company', text='Company', anchor=tk.W)
-        self.tree.heading('Market Cap', text='Market Cap', anchor=tk.W)
-        self.tree.heading('EPS Forecast', text='EPS Forecast', anchor=tk.W)
-        self.tree.heading('EPS Actual', text='EPS Actual', anchor=tk.W)
-        self.tree.column('EPS Surprise', anchor=tk.E, width=100)
-        self.tree.column('Price 4:00 am', anchor=tk.E, width=100)
-        self.tree.column('Current Price', anchor=tk.E, width=100)
-        self.tree.column('Price % Δ', anchor=tk.E, width=100)
-        self.tree.column('Δ 1 week', anchor=tk.E, width=100)
-        self.tree.column('Δ 1 Month', anchor=tk.E, width=100)
-        self.tree.column('Δ 1 Year', anchor=tk.E, width=100)
-        self.tree.column('Overreaction?', anchor=tk.E, width=100)
+            # Customize widths for specific columns
+            if col in ['Company']:
+                self.tree.column(col, width=200)  # Wider for company names
+            elif col in ['Symbol']:
+                self.tree.column(col, width=80)  # Narrower for symbols
 
         # Add data
         for idx, row in enumerate(data['data']['rows']):
@@ -64,27 +46,52 @@ class StockTable(tk.Tk):
             earnings_entry = next((e for e in earnings_list if e['symbol'] == symbol), None)
             eps_pct_change = calculate_earnings_surprise(earnings_entry)
 
+            # Get price data
+            opening_price, current_price = api_requests.get_open_close_price(symbol)
+            price_change = ((current_price - opening_price) / opening_price * 100) if opening_price and current_price else None
+
+            # Get historical price changes
+            changes = api_requests.get_price_changes(symbol)
+
+            # Convert eps_pct_change to float if it's a percentage string
+            if isinstance(eps_pct_change, str):
+                try:
+                    eps_pct_change = float(eps_pct_change.strip('%'))
+                except (ValueError, AttributeError):
+                    eps_pct_change = None
+
             self.tree.insert(parent='', index='end', iid=str(idx), values=(
                 row['symbol'],
                 row['name'],
                 row['marketCap'],
                 earnings_entry['eps_estimated'] if earnings_entry else '',
                 earnings_entry['eps_actual'] if earnings_entry else '',
-                eps_pct_change,
-                '',  # Price 4:00 am - to be filled later
-                '',  # Current Price - to be filled later
-                '',  # Price % Δ - to be filled later
-                '',  # Δ 1 week - to be filled later
-                '',  # Δ 1 Month - to be filled later
-                '',  # Δ 1 Year - to be filled later
-                '',  # Sentiment - to be filled later
-                ''  # Overreaction? - to be filled later
+                f"{eps_pct_change:.2f}%" if eps_pct_change is not None else '',
+                f"${opening_price:.2f}" if opening_price else '',
+                f"${current_price:.2f}" if current_price else '',
+                f"{price_change:.2f}%" if price_change is not None else '',
+                f"{changes['1w']:.2f}%" if changes and '1w' in changes else '',
+                f"{changes['1m']:.2f}%" if changes and '1m' in changes else '',
+                f"{changes['3m']:.2f}%" if changes and '3m' in changes else '',
+                f"{changes['1y']:.2f}%" if changes and '1y' in changes else '',
+                self.determine_overreaction(eps_pct_change, price_change) if eps_pct_change is not None and price_change is not None else ''
             ))
 
         # Add scrollbar
         scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.tree.yview)
         scrollbar.pack(side='right', fill='y')
         self.tree.configure(yscrollcommand=scrollbar.set)
+
+    def determine_overreaction(self, eps_surprise, price_change):
+        """
+        Determine if the price change is an overreaction compared to the EPS surprise
+        """
+        try:
+            if abs(float(price_change)) > abs(float(eps_surprise)) * 2:
+                return "Yes"
+            return "No"
+        except (ValueError, TypeError):
+            return ""
 
 if __name__ == '__main__':
     app = StockTable()
