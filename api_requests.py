@@ -1,5 +1,7 @@
 import os
 from typing import Optional, Dict, Any, List
+from datetime import datetime, timedelta
+import json
 
 import requests
 from ratelimit import limits, sleep_and_retry
@@ -11,14 +13,13 @@ class ApiConfig:
     # Rate limiting
     NASDAQ_CALLS = 30
     NASDAQ_PERIOD = 60
-    FMP_CALLS = 10
-    FMP_PERIOD = 3
+    # Increased FMP limits for the more intensive data fetching
+    FMP_CALLS = 15
+    FMP_PERIOD = 10
 
     # Base URLs
     NASDAQ_BASE_URL = 'https://api.nasdaq.com/api'
     FMP_BASE_URL = 'https://financialmodelingprep.com/api/v3'
-    # The 'stable' URL is likely deprecated and has been removed from this version.
-    # FMP_STABLE_URL = 'https://financialmodelingprep.com/stable'
 
 
 # --- Custom Exception ---
@@ -41,21 +42,40 @@ class BaseApiClient:
         self.session = requests.Session()
 
     def _request(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
+        """A wrapper around requests.get with comprehensive debugging and error handling."""
+        print("\n--- [DEBUG] Making API Request ---")
+        print(f"URL: {url}")
+        if params:
+            masked_params = {k: ('**********' if k == 'apikey' else v) for k, v in params.items()}
+            print(f"PARAMS: {masked_params}")
+
         try:
             response = self.session.get(url, params=params, headers=headers, timeout=10)
-            response.raise_for_status()  # Raises HTTPError for bad responses (4xx or 5xx)
+            print(f"[DEBUG] Response Status Code: {response.status_code}")
+            print(f"[DEBUG] Raw Response Text: {response.text}")
+            response.raise_for_status()
+
+            if not response.text:
+                print("[DEBUG] Response text is empty.")
+                return None
 
             data = response.json()
             if not data:
-                # Handle cases where the API returns an empty but successful response
+                print(f"[DEBUG] Parsed JSON is empty or None. Response was: {response.text}")
                 return None
+
+            print("[DEBUG] Successfully parsed JSON data.")
             return data
 
         except requests.exceptions.HTTPError as http_err:
             raise APIError(status_code=http_err.response.status_code, message=str(http_err)) from http_err
+        except requests.exceptions.JSONDecodeError:
+            raise APIError(status_code=response.status_code,
+                           message=f"Failed to decode JSON. Response was: {response.text}")
         except requests.exceptions.RequestException as req_err:
-            # Handle network-related errors
             raise APIError(status_code=503, message=f"Network error: {req_err}") from req_err
+        finally:
+            print("--- [DEBUG] End Request ---\n")
 
 
 # --- Specific API Clients ---
@@ -98,34 +118,76 @@ class FmpApiClient(BaseApiClient):
         if not self.api_key:
             raise ValueError("FMP API key not provided or set in FINANCIAL_API_KEY environment variable.")
         self.base_url = ApiConfig.FMP_BASE_URL
-        # Removed stable_url as it's likely deprecated.
-
-    def _build_url(self, base_url: str, path: str) -> str:
-        return f"{base_url}/{path}?apikey={self.api_key}"
+        self.params = {'apikey': self.api_key}
 
     @sleep_and_retry
     @limits(calls=ApiConfig.FMP_CALLS, period=ApiConfig.FMP_PERIOD)
     def get_earnings_data(self, symbol: str) -> Optional[List[Dict[str, Any]]]:
         """Get historical earnings data for a specific symbol."""
         print(f"Fetching FMP earnings for {symbol}")
-        # FIX: Changed to use the v3 API base URL and the correct endpoint for earnings surprises.
-        url = self._build_url(self.base_url, f"earnings-surprises/{symbol}")
-        return self._request(url)
+        url = f"{self.base_url}/earnings-surprises/{symbol}"
+        return self._request(url, params=self.params)
 
     @sleep_and_retry
     @limits(calls=ApiConfig.FMP_CALLS, period=ApiConfig.FMP_PERIOD)
-    def get_historical_price_full(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def get_historical_price_full(self, symbol: str, limit: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Get full historical daily price data for a symbol."""
         print(f"Fetching FMP historical prices for {symbol}")
-        url = self._build_url(self.base_url, f"historical-price-full/{symbol}")
-        return self._request(url)
+        url = f"{self.base_url}/historical-price-full/{symbol}"
+
+        request_params = self.params.copy()
+        if limit:
+            request_params['timeseries'] = limit
+
+        return self._request(url, params=request_params)
 
     @sleep_and_retry
     @limits(calls=ApiConfig.FMP_CALLS, period=ApiConfig.FMP_PERIOD)
     def get_aftermarket_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Get the after-market quote for a symbol."""
         print(f"Fetching FMP aftermarket quote for {symbol}")
-        # FIX: Changed to use the v3 API base URL and a more standard quote endpoint.
-        url = self._build_url(self.base_url, f"quote/{symbol}")
-        data = self._request(url)
+        url = f"{self.base_url}/quote/{symbol}"
+        data = self._request(url, params=self.params)
         return data[0] if data else None
+
+    @sleep_and_retry
+    @limits(calls=ApiConfig.FMP_CALLS, period=ApiConfig.FMP_PERIOD)
+    def get_company_profile(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Get company profile data, including beta."""
+        print(f"Fetching FMP company profile for {symbol}")
+        url = f"{self.base_url}/profile/{symbol}"
+        data = self._request(url, params=self.params)
+        return data[0] if data else None
+
+    @sleep_and_retry
+    @limits(calls=ApiConfig.FMP_CALLS, period=ApiConfig.FMP_PERIOD)
+    def get_risk_free_rate(self) -> Optional[float]:
+        """
+        Fetches the latest 3-month Treasury Bill rate as a proxy for the risk-free rate.
+        """
+        print("Fetching risk-free rate (3-Month Treasury) using FMP v4 endpoint")
+        v4_url = 'https://financialmodelingprep.com/api/v4/treasury'
+
+        to_date = datetime.now()
+        from_date = to_date - timedelta(days=7)
+
+        request_params = self.params.copy()
+        request_params['from'] = from_date.strftime('%Y-%m-%d')
+        request_params['to'] = to_date.strftime('%Y-%m-%d')
+
+        data = self._request(v4_url, params=request_params)
+
+        if data and isinstance(data, list):
+            latest_record = data[-1]
+            rate_value = latest_record.get('month3')
+
+            if rate_value is not None:
+                try:
+                    print(f"Successfully fetched risk-free rate from API for date: {latest_record.get('date')}")
+                    return float(rate_value)
+                except (ValueError, TypeError):
+                    print(f"Could not convert rate value to float: {rate_value}")
+
+        default_rate = 5.0
+        print(f"Warning: Could not fetch risk-free rate from FMP. Using fallback value of {default_rate}%.")
+        return default_rate
