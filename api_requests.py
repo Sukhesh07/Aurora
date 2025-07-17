@@ -14,8 +14,8 @@ class ApiConfig:
     NASDAQ_CALLS = 30
     NASDAQ_PERIOD = 60
     # Increased FMP limits for the more intensive data fetching
-    FMP_CALLS = 15
-    FMP_PERIOD = 4
+    FMP_CALLS = 20
+    FMP_PERIOD = 2
 
     # Base URLs
     NASDAQ_BASE_URL = 'https://api.nasdaq.com/api'
@@ -43,28 +43,28 @@ class BaseApiClient:
 
     def _request(self, url: str, params: Optional[Dict] = None, headers: Optional[Dict] = None) -> Any:
         """A wrapper around requests.get with comprehensive debugging and error handling."""
-        print("\n--- [DEBUG] Making API Request ---")
-        print(f"URL: {url}")
+        #print("\n--- [DEBUG] Making API Request ---")
+        #print(f"URL: {url}")
         if params:
             masked_params = {k: ('**********' if k == 'apikey' else v) for k, v in params.items()}
-            print(f"PARAMS: {masked_params}")
+            #print(f"PARAMS: {masked_params}")
 
         try:
             response = self.session.get(url, params=params, headers=headers, timeout=10)
-            print(f"[DEBUG] Response Status Code: {response.status_code}")
-            print(f"[DEBUG] Raw Response Text: {response.text}")
+            #print(f"[DEBUG] Response Status Code: {response.status_code}")
+            #print(f"[DEBUG] Raw Response Text: {response.text}")
             response.raise_for_status()
 
             if not response.text:
-                print("[DEBUG] Response text is empty.")
+                #print("[DEBUG] Response text is empty.")
                 return None
 
             data = response.json()
             if not data:
-                print(f"[DEBUG] Parsed JSON is empty or None. Response was: {response.text}")
+                #print(f"[DEBUG] Parsed JSON is empty or None. Response was: {response.text}")
                 return None
 
-            print("[DEBUG] Successfully parsed JSON data.")
+            #print("[DEBUG] Successfully parsed JSON data.")
             return data
 
         except requests.exceptions.HTTPError as http_err:
@@ -74,8 +74,6 @@ class BaseApiClient:
                            message=f"Failed to decode JSON. Response was: {response.text}")
         except requests.exceptions.RequestException as req_err:
             raise APIError(status_code=503, message=f"Network error: {req_err}") from req_err
-        finally:
-            print("--- [DEBUG] End Request ---\n")
 
 
 # --- Specific API Clients ---
@@ -148,12 +146,26 @@ class FmpApiClient(BaseApiClient):
 
     @sleep_and_retry
     @limits(calls=ApiConfig.FMP_CALLS, period=ApiConfig.FMP_PERIOD)
-    def get_aftermarket_quote(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Get the after-market quote for a symbol."""
+    def get_aftermarket_quote(self, symbol: str) -> Optional[float]:
+        """Get the current after-market/pre-market asking price for a symbol."""
         print(f"Fetching FMP aftermarket quote for {symbol}")
-        url = f"{self.base_url}/quote/{symbol}"
+        url = f"https://financialmodelingprep.com/api/v4/pre-post-market/{symbol}"
         data = self._request(url, params=self.params)
-        return data[0] if data else None
+
+        quote_data = None
+        if isinstance(data, list) and data:
+            quote_data = data[0]
+        elif isinstance(data, dict):
+            quote_data = data
+
+        if quote_data:
+            ask_price = quote_data.get('ask')
+            if ask_price is not None:
+                try:
+                    return float(ask_price)
+                except (ValueError, TypeError):
+                    print(f"Could not convert ask price '{ask_price}' to float for symbol {symbol}")
+        return None
 
     @sleep_and_retry
     @limits(calls=ApiConfig.FMP_CALLS, period=ApiConfig.FMP_PERIOD)
@@ -170,7 +182,7 @@ class FmpApiClient(BaseApiClient):
         """
         Fetches the latest 3-month Treasury Bill rate as a proxy for the risk-free rate.
         """
-        print("Fetching risk-free rate (3-Month Treasury) using FMP v4 endpoint")
+        #print("Fetching risk-free rate (3-Month Treasury) using FMP v4 endpoint")
         v4_url = 'https://financialmodelingprep.com/api/v4/treasury'
 
         to_date = datetime.now()
@@ -188,7 +200,7 @@ class FmpApiClient(BaseApiClient):
 
             if rate_value is not None:
                 try:
-                    print(f"Successfully fetched risk-free rate from API for date: {latest_record.get('date')}")
+                    #print(f"Successfully fetched risk-free rate from API for date: {latest_record.get('date')}")
                     return float(rate_value)
                 except (ValueError, TypeError):
                     print(f"Could not convert rate value to float: {rate_value}")
