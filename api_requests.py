@@ -15,7 +15,7 @@ class ApiConfig:
     NASDAQ_PERIOD = 60
     # Increased FMP limits for the more intensive data fetching
     FMP_CALLS = 15
-    FMP_PERIOD = 10
+    FMP_PERIOD = 4
 
     # Base URLs
     NASDAQ_BASE_URL = 'https://api.nasdaq.com/api'
@@ -122,11 +122,16 @@ class FmpApiClient(BaseApiClient):
 
     @sleep_and_retry
     @limits(calls=ApiConfig.FMP_CALLS, period=ApiConfig.FMP_PERIOD)
-    def get_earnings_data(self, symbol: str) -> Optional[List[Dict[str, Any]]]:
+    def get_earnings_data(self, symbol: str, limit: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
         """Get historical earnings data for a specific symbol."""
         print(f"Fetching FMP earnings for {symbol}")
         url = f"{self.base_url}/earnings-surprises/{symbol}"
-        return self._request(url, params=self.params)
+
+        request_params = self.params.copy()
+        if limit:
+            request_params['limit'] = limit
+
+        return self._request(url, params=request_params)
 
     @sleep_and_retry
     @limits(calls=ApiConfig.FMP_CALLS, period=ApiConfig.FMP_PERIOD)
